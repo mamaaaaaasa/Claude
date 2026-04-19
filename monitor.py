@@ -1,18 +1,18 @@
 """
 上井草グリーンハイツ 新規物件監視スクリプト
-SUUMO・アットホーム・HOMES を巡回し、新規掲載があればLINEに通知する。
+SUUMO・アットホーム・HOMES を巡回し、新規掲載があれば Telegram に通知する。
 
 セットアップ:
-  1. LINE Notify でトークンを取得: https://notify-bot.line.me/
-  2. GitHub Secrets に LINE_NOTIFY_TOKEN を登録
-  3. GitHub Actions が2時間ごとに自動実行
+  1. Telegram で @BotFather に話しかけ /newbot でボットを作成 → BOT_TOKEN を取得
+  2. 作成したボットに話しかける → @userinfobot に話しかけて CHAT_ID を取得
+  3. GitHub Secrets に TELEGRAM_BOT_TOKEN と TELEGRAM_CHAT_ID を登録
+  4. GitHub Actions が2時間ごとに自動実行
 """
 
 import json
 import os
 import sys
 import time
-import re
 from datetime import datetime, timezone, timedelta
 from urllib.parse import quote
 
@@ -20,7 +20,8 @@ import requests
 from bs4 import BeautifulSoup
 
 BUILDING_NAME = "上井草グリーンハイツ"
-LINE_NOTIFY_TOKEN = os.environ.get("LINE_NOTIFY_TOKEN", "")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seen_listings.json")
 JST = timezone(timedelta(hours=9))
 
@@ -54,22 +55,21 @@ def save_seen(ids: set) -> None:
         )
 
 
-# ── LINE 通知 ─────────────────────────────────────────────────────────────────
+# ── Telegram 通知 ────────────────────────────────────────────────────────────
 
-def notify_line(message: str) -> bool:
-    if not LINE_NOTIFY_TOKEN:
-        print(f"[LINE] トークン未設定。メッセージ:\n{message}")
+def notify_telegram(message: str) -> bool:
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print(f"[Telegram] トークン/Chat ID 未設定。メッセージ:\n{message}")
         return False
     try:
         resp = requests.post(
-            "https://notify-api.line.me/api/notify",
-            headers={"Authorization": f"Bearer {LINE_NOTIFY_TOKEN}"},
-            data={"message": f"\n{message}"},
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": message},
             timeout=15,
         )
         return resp.status_code == 200
     except Exception as e:
-        print(f"[LINE] 通知エラー: {e}")
+        print(f"[Telegram] 通知エラー: {e}")
         return False
 
 
@@ -269,9 +269,9 @@ def main() -> int:
                 f"{format_listing(listing)}\n\n"
                 f"チェック時刻: {now_jst}"
             )
-            success = notify_line(msg)
+            success = notify_telegram(msg)
             status = "OK" if success else "失敗"
-            print(f"[LINE通知 {status}] {listing['id']}")
+            print(f"[Telegram通知 {status}] {listing['id']}")
             time.sleep(1)
 
         seen_ids.update(l["id"] for l in new_listings)
@@ -280,7 +280,7 @@ def main() -> int:
     elif not all_listings:
         print("⚠️  全サイトで物件情報を取得できませんでした（スクレイピング失敗の可能性）")
         # サイト構造変更の可能性をLINEで警告（1日1回程度に抑えたい場合は別途制御）
-        notify_line(
+        notify_telegram(
             f"⚠️ {BUILDING_NAME} 監視\n"
             "全サイトの物件情報を取得できませんでした。\n"
             "サイト構造が変更された可能性があります。\n"
