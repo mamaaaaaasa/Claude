@@ -182,9 +182,10 @@ def scrape_suumo(browser) -> list[dict]:
 
 
 def scrape_athome(browser) -> list[dict]:
-    """アットホーム: 物件名で検索"""
+    """アットホーム: フリーワード検索（BNAM URLパラメータは機能しないため）"""
     results = []
-    url = f"https://www.athome.co.jp/chintai/tokyo/list/?BNAM={quote(BUILDING_NAME)}"
+    # TW = テキストワード（フリーワード）検索パラメータ
+    url = f"https://www.athome.co.jp/chintai/tokyo/list/?TW={quote(BUILDING_NAME)}"
     soup = _fetch_html(browser, url, debug_name="athome")
     if not soup:
         return results
@@ -193,14 +194,13 @@ def scrape_athome(browser) -> list[dict]:
         print(f"[アットホーム] ページ内に '{BUILDING_NAME}' が見つかりません")
         return results
 
-    # アットホームは複数のHTML構造バリアントがあるため幅広く探す
     for item in soup.select(
         "li[class*='property'], div[class*='cassette'], article[class*='property'], "
-        ".itemCassette, .bukkenCassette"
+        ".itemCassette, .bukkenCassette, [class*='bukken']"
     ):
         name_el = item.select_one(
             "[class*='buildingName'], [class*='building-name'], "
-            "[class*='property-name'], h2, h3"
+            "[class*='property-name'], [class*='bukken-name'], h2, h3"
         )
         if not name_el or BUILDING_NAME not in name_el.get_text():
             continue
@@ -210,9 +210,9 @@ def scrape_athome(browser) -> list[dict]:
             continue
 
         href = link_el["href"]
-        price_el  = item.select_one("[class*='price'], [class*='Price']")
-        layout_el = item.select_one("[class*='madori'], [class*='layout'], [class*='Layout']")
-        area_el   = item.select_one("[class*='menseki'], [class*='area'], [class*='Area']")
+        price_el  = item.select_one("[class*='price'], [class*='Price'], [class*='rent']")
+        layout_el = item.select_one("[class*='madori'], [class*='layout']")
+        area_el   = item.select_one("[class*='menseki'], [class*='area']")
 
         listing_id = f"athome:{href}"
         results.append({
@@ -230,9 +230,9 @@ def scrape_athome(browser) -> list[dict]:
 
 
 def scrape_homes(browser) -> list[dict]:
-    """ライフルホームズ: 物件名で検索"""
+    """ライフルホームズ: フリーワード検索"""
     results = []
-    url = f"https://www.homes.co.jp/chintai/tokyo/list/?bname={quote(BUILDING_NAME)}"
+    url = f"https://www.homes.co.jp/chintai/tokyo/list/?keyword={quote(BUILDING_NAME)}"
     soup = _fetch_html(browser, url, debug_name="homes")
     if not soup:
         return results
@@ -242,11 +242,12 @@ def scrape_homes(browser) -> list[dict]:
         return results
 
     for item in soup.select(
-        "[class*='cassette'], [class*='property'], [class*='bukken'], li[class*='item']"
+        "[class*='cassette'], [class*='property'], [class*='bukken'], "
+        "li[class*='item'], [class*='Card']"
     ):
         name_el = item.select_one(
             "[class*='buildingName'], [class*='building-name'], "
-            "[class*='bukken-name'], h2, h3"
+            "[class*='bukken-name'], [class*='name'], h2, h3"
         )
         if not name_el or BUILDING_NAME not in name_el.get_text():
             continue
