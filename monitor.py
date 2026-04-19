@@ -14,7 +14,7 @@ import os
 import sys
 import time
 from datetime import datetime, timezone, timedelta
-from urllib.parse import quote
+from urllib.parse import quote, urlparse, parse_qs
 
 import requests
 from bs4 import BeautifulSoup
@@ -181,98 +181,86 @@ def scrape_suumo(browser) -> list[dict]:
     return results
 
 
-def scrape_athome(browser) -> list[dict]:
-    """アットホーム: フリーワード検索（BNAM URLパラメータは機能しないため）"""
+REALESTATE_DOMAINS = [
+    "athome.co.jp",
+    "homes.co.jp",
+    "chintai.com",
+    "apamanshop.com",
+    "able.co.jp",
+    "minimini.jp",
+    "chintai.net",
+    "realestate.co.jp",
+    "relo-guide.jp",
+    "e-chintai.com",
+    "century21.jp",
+    "leopalace21.com",
+    "heyaagent.com",
+    "irent.jp",
+    "o-uccino.com",
+]
+
+
+def scrape_via_duckduckgo(browser) -> list[dict]:
+    """DuckDuckGo で物件名を検索し、不動産サイトの結果URLを収集する。
+    仲介サイトは物件名URL検索に対応していないため、ユーザーと同じく検索エンジン経由でアクセスする。
+    """
     results = []
-    # TW = テキストワード（フリーワード）検索パラメータ
-    url = f"https://www.athome.co.jp/chintai/tokyo/list/?TW={quote(BUILDING_NAME)}"
-    soup = _fetch_html(browser, url, debug_name="athome")
+    query = f'"{BUILDING_NAME}" 賃貸'
+    url = f"https://duckduckgo.com/html/?q={quote(query)}&kl=jp-jp"
+    soup = _fetch_html(browser, url, debug_name="duckduckgo")
     if not soup:
         return results
 
-    if BUILDING_NAME not in soup.get_text():
-        print(f"[アットホーム] ページ内に '{BUILDING_NAME}' が見つかりません")
-        return results
+    seen_urls: set[str] = set()
 
-    for item in soup.select(
-        "li[class*='property'], div[class*='cassette'], article[class*='property'], "
-        ".itemCassette, .bukkenCassette, [class*='bukken']"
-    ):
-        name_el = item.select_one(
-            "[class*='buildingName'], [class*='building-name'], "
-            "[class*='property-name'], [class*='bukken-name'], h2, h3"
-        )
-        if not name_el or BUILDING_NAME not in name_el.get_text():
+    for result in soup.select("div.result, .results_links, .web-result"):
+        title_el = result.select_one("a.result__a, h2 a, .result__title a")
+        snippet_el = result.select_one(".result__snippet, .result__body")
+
+        if not title_el:
             continue
 
-        link_el = item.select_one("a[href]")
-        if not link_el:
+        title_text = title_el.get_text(strip=True)
+        snippet_text = snippet_el.get_text(strip=True) if snippet_el else ""
+        combined_text = title_text + " " + snippet_text
+
+        if BUILDING_NAME not in combined_text:
             continue
 
-        href = link_el["href"]
-        price_el  = item.select_one("[class*='price'], [class*='Price'], [class*='rent']")
-        layout_el = item.select_one("[class*='madori'], [class*='layout']")
-        area_el   = item.select_one("[class*='menseki'], [class*='area']")
+        href = title_el.get("href", "")
+        # DuckDuckGo sometimes wraps URLs in redirect links
+        if "uddg=" in href:
+            parsed = urlparse(href)
+            uddg = parse_qs(parsed.query).get("uddg", [""])
+            href = uddg[0] if uddg[0] else href
 
-        listing_id = f"athome:{href}"
+        if not href or not href.startswith("http"):
+            continue
+
+        # Only keep links from known real estate domains
+        if not any(domain in href for domain in REALESTATE_DOMAINS):
+            continue
+
+        # Deduplicate by URL
+        if href in seen_urls:
+            continue
+        seen_urls.add(href)
+
+        # Extract domain as source label
+        domain = urlparse(href).netloc.replace("www.", "")
+
+        listing_id = f"search:{href}"
         results.append({
             "id":       listing_id,
-            "source":   "アットホーム",
-            "building": name_el.get_text(strip=True),
-            "price":    price_el.get_text(strip=True)  if price_el  else "不明",
-            "layout":   layout_el.get_text(strip=True) if layout_el else "",
-            "area":     area_el.get_text(strip=True)   if area_el   else "",
-            "url":      href if href.startswith("http") else f"https://www.athome.co.jp{href}",
+            "source":   domain,
+            "building": BUILDING_NAME,
+            "price":    "",
+            "layout":   "",
+            "area":     "",
+            "url":      href,
         })
 
-    print(f"[アットホーム] {len(results)} 件取得")
-    return results
-
-
-def scrape_homes(browser) -> list[dict]:
-    """ライフルホームズ: フリーワード検索"""
-    results = []
-    url = f"https://www.homes.co.jp/chintai/tokyo/list/?keyword={quote(BUILDING_NAME)}"
-    soup = _fetch_html(browser, url, debug_name="homes")
-    if not soup:
-        return results
-
-    if BUILDING_NAME not in soup.get_text():
-        print(f"[HOMES] ページ内に '{BUILDING_NAME}' が見つかりません")
-        return results
-
-    for item in soup.select(
-        "[class*='cassette'], [class*='property'], [class*='bukken'], "
-        "li[class*='item'], [class*='Card']"
-    ):
-        name_el = item.select_one(
-            "[class*='buildingName'], [class*='building-name'], "
-            "[class*='bukken-name'], [class*='name'], h2, h3"
-        )
-        if not name_el or BUILDING_NAME not in name_el.get_text():
-            continue
-
-        link_el = item.select_one("a[href]")
-        if not link_el:
-            continue
-
-        href = link_el["href"]
-        price_el  = item.select_one("[class*='rent'], [class*='price'], [class*='Price']")
-        layout_el = item.select_one("[class*='madori'], [class*='layout']")
-        area_el   = item.select_one("[class*='menseki'], [class*='area']")
-
-        listing_id = f"homes:{href}"
-        results.append({
-            "id":       listing_id,
-            "source":   "HOMES",
-            "building": name_el.get_text(strip=True),
-            "price":    price_el.get_text(strip=True)  if price_el  else "不明",
-            "layout":   layout_el.get_text(strip=True) if layout_el else "",
-            "area":     area_el.get_text(strip=True)   if area_el   else "",
-            "url":      href if href.startswith("http") else f"https://www.homes.co.jp{href}",
-        })
-
-    print(f"[HOMES] {len(results)} 件取得")
+    print(f"[DuckDuckGo] {len(results)} 件取得")
     return results
 
 
@@ -319,7 +307,7 @@ def main() -> int:
             timezone_id="Asia/Tokyo",
         )
 
-        for scraper in [scrape_suumo, scrape_athome, scrape_homes]:
+        for scraper in [scrape_suumo, scrape_via_duckduckgo]:
             all_listings.extend(scraper(context))
             time.sleep(2)
 
