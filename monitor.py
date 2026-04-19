@@ -64,6 +64,38 @@ def notify_telegram(message: str) -> bool:
         return False
 
 
+def block_unauthorized_users() -> None:
+    """自分以外からのメッセージに「利用できません」と返信してから削除する"""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    try:
+        resp = requests.get(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates",
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return
+        updates = resp.json().get("result", [])
+        for update in updates:
+            msg = update.get("message", {})
+            chat_id = str(msg.get("chat", {}).get("id", ""))
+            update_id = update.get("update_id")
+            if chat_id and chat_id != str(TELEGRAM_CHAT_ID):
+                requests.post(
+                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                    json={"chat_id": chat_id, "text": "このbotは非公開です。"},
+                    timeout=10,
+                )
+            # 処理済みとしてマーク
+            requests.get(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates",
+                params={"offset": update_id + 1},
+                timeout=10,
+            )
+    except Exception as e:
+        print(f"[Telegram] unauthorized check エラー: {e}")
+
+
 # ── Playwright ブラウザ取得 ───────────────────────────────────────────────────
 
 def _fetch_html(browser, url: str, debug_name: str = "") -> BeautifulSoup | None:
@@ -266,6 +298,7 @@ def format_listing(listing: dict) -> str:
 def main() -> int:
     now_jst = datetime.now(JST).strftime("%Y-%m-%d %H:%M JST")
     print(f"=== 物件監視開始: {now_jst} ===")
+    block_unauthorized_users()
 
     seen_ids = load_seen()
     all_listings: list[dict] = []
