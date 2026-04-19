@@ -152,7 +152,7 @@ def scrape_suumo(browser) -> list[dict]:
 def scrape_athome(browser) -> list[dict]:
     """アットホーム: 物件名で検索"""
     results = []
-    url = f"https://www.athome.co.jp/chintai/list/?BNAM={quote(BUILDING_NAME)}&PREF=13"
+    url = f"https://www.athome.co.jp/chintai/tokyo/list/?BNAM={quote(BUILDING_NAME)}"
     soup = _fetch_html(browser, url, debug_name="athome")
     if not soup:
         return results
@@ -200,7 +200,7 @@ def scrape_athome(browser) -> list[dict]:
 def scrape_homes(browser) -> list[dict]:
     """ライフルホームズ: 物件名で検索"""
     results = []
-    url = f"https://www.homes.co.jp/chintai/list/?bukken_name={quote(BUILDING_NAME)}&pref=13"
+    url = f"https://www.homes.co.jp/chintai/tokyo/list/?bname={quote(BUILDING_NAME)}"
     soup = _fetch_html(browser, url, debug_name="homes")
     if not soup:
         return results
@@ -324,4 +324,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
+    sys.exit(0)
