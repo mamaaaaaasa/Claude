@@ -66,16 +66,24 @@ def notify_telegram(message: str) -> bool:
 
 # ── Playwright ブラウザ取得 ───────────────────────────────────────────────────
 
-def _fetch_html(browser, url: str) -> BeautifulSoup | None:
+def _fetch_html(browser, url: str, debug_name: str = "") -> BeautifulSoup | None:
     """ヘッドレスChromiumでページを取得してBeautifulSoupを返す"""
     try:
         page = browser.new_page()
         page.set_extra_http_headers({"Accept-Language": "ja,en-US;q=0.9,en;q=0.8"})
-        page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        # 動的コンテンツの読み込みを少し待つ
-        page.wait_for_timeout(2000)
+        response = page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        print(f"[Browser] HTTP {response.status}: {url}")
+        page.wait_for_timeout(3000)
         html = page.content()
         page.close()
+
+        # デバッグ用にHTMLを保存（GitHub Actions Artifactsで確認できる）
+        if debug_name:
+            debug_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"debug_{debug_name}.html")
+            with open(debug_path, "w", encoding="utf-8") as f:
+                f.write(html)
+            print(f"[Debug] HTML保存: debug_{debug_name}.html ({len(html)} bytes)")
+
         return BeautifulSoup(html, "lxml")
     except PlaywrightTimeout:
         print(f"[Browser] タイムアウト: {url}")
@@ -94,11 +102,10 @@ def scrape_suumo(browser) -> list[dict]:
         "https://suumo.jp/jj/chintai/ichiran/FR301FC001/"
         f"?ar=030&bs=040&ta=13&fw2={quote(BUILDING_NAME)}"
     )
-    soup = _fetch_html(browser, url)
+    soup = _fetch_html(browser, url, debug_name="suumo")
     if not soup:
         return results
 
-    # 建物名が含まれているか確認（セレクター変化への保険）
     if BUILDING_NAME not in soup.get_text():
         print(f"[SUUMO] ページ内に '{BUILDING_NAME}' が見つかりません")
         return results
@@ -146,7 +153,7 @@ def scrape_athome(browser) -> list[dict]:
     """アットホーム: 物件名で検索"""
     results = []
     url = f"https://www.athome.co.jp/chintai/list/?BNAM={quote(BUILDING_NAME)}&PREF=13"
-    soup = _fetch_html(browser, url)
+    soup = _fetch_html(browser, url, debug_name="athome")
     if not soup:
         return results
 
@@ -194,7 +201,7 @@ def scrape_homes(browser) -> list[dict]:
     """ライフルホームズ: 物件名で検索"""
     results = []
     url = f"https://www.homes.co.jp/chintai/list/?bukken_name={quote(BUILDING_NAME)}&pref=13"
-    soup = _fetch_html(browser, url)
+    soup = _fetch_html(browser, url, debug_name="homes")
     if not soup:
         return results
 
