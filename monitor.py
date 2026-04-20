@@ -200,58 +200,43 @@ REALESTATE_DOMAINS = [
 ]
 
 
-def scrape_via_duckduckgo(browser) -> list[dict]:
-    """DuckDuckGo で物件名を検索し、不動産サイトの結果URLを収集する。
-    仲介サイトは物件名URL検索に対応していないため、ユーザーと同じく検索エンジン経由でアクセスする。
-    """
+def _search_engine_scrape(browser, search_url: str, label: str,
+                           link_selector: str, snippet_selector: str) -> list[dict]:
+    """検索エンジンの結果から不動産サイトのURLを収集する共通処理"""
     results = []
-    query = f'"{BUILDING_NAME}" 賃貸'
-    url = f"https://duckduckgo.com/html/?q={quote(query)}&kl=jp-jp"
-    soup = _fetch_html(browser, url, debug_name="duckduckgo")
+    soup = _fetch_html(browser, search_url, debug_name=label.lower())
     if not soup:
         return results
 
     seen_urls: set[str] = set()
 
-    for result in soup.select("div.result, .results_links, .web-result"):
-        title_el = result.select_one("a.result__a, h2 a, .result__title a")
-        snippet_el = result.select_one(".result__snippet, .result__body")
-
-        if not title_el:
-            continue
-
-        title_text = title_el.get_text(strip=True)
-        snippet_text = snippet_el.get_text(strip=True) if snippet_el else ""
-        combined_text = title_text + " " + snippet_text
-
-        if BUILDING_NAME not in combined_text:
-            continue
-
-        href = title_el.get("href", "")
-        # DuckDuckGo sometimes wraps URLs in redirect links
-        if "uddg=" in href:
-            parsed = urlparse(href)
-            uddg = parse_qs(parsed.query).get("uddg", [""])
-            href = uddg[0] if uddg[0] else href
-
+    for link_el in soup.select(link_selector):
+        href = link_el.get("href", "")
         if not href or not href.startswith("http"):
             continue
-
-        # Only keep links from known real estate domains
         if not any(domain in href for domain in REALESTATE_DOMAINS):
             continue
 
-        # Deduplicate by URL
+        # Find surrounding text (title + snippet)
+        container = link_el.find_parent() or link_el
+        for _ in range(3):
+            parent = container.find_parent()
+            if parent:
+                container = parent
+            else:
+                break
+        snippet_el = container.select_one(snippet_selector) if snippet_selector else None
+        combined = link_el.get_text(strip=True) + " " + (snippet_el.get_text(strip=True) if snippet_el else "")
+
+        if BUILDING_NAME not in combined:
+            continue
         if href in seen_urls:
             continue
         seen_urls.add(href)
 
-        # Extract domain as source label
         domain = urlparse(href).netloc.replace("www.", "")
-
-        listing_id = f"search:{href}"
         results.append({
-            "id":       listing_id,
+            "id":       f"search:{href}",
             "source":   domain,
             "building": BUILDING_NAME,
             "price":    "",
@@ -260,7 +245,35 @@ def scrape_via_duckduckgo(browser) -> list[dict]:
             "url":      href,
         })
 
-    print(f"[DuckDuckGo] {len(results)} 件取得")
+    return results
+
+
+def scrape_via_search(browser) -> list[dict]:
+    """Bing → Yahoo Japan の順で物件名を検索し、不動産サイトのURLを収集する"""
+    query = f'"{BUILDING_NAME}" 賃貸'
+
+    # 1st: Bing
+    bing_url = f"https://www.bing.com/search?q={quote(query)}&setlang=ja-JP&cc=JP"
+    results = _search_engine_scrape(
+        browser, bing_url, "bing",
+        link_selector="li.b_algo h2 a, #b_results h2 a",
+        snippet_selector=".b_caption p, .b_snippet",
+    )
+    print(f"[Bing] {len(results)} 件取得")
+
+    if results:
+        return results
+
+    # 2nd fallback: Yahoo Japan
+    print("[Bing] 0件 → Yahoo Japan にフォールバック")
+    time.sleep(2)
+    yahoo_url = f"https://search.yahoo.co.jp/search?p={quote(query)}"
+    results = _search_engine_scrape(
+        browser, yahoo_url, "yahoo",
+        link_selector="#web .sw-Card__title a, .sw-Card h3 a, #WS7 h3 a",
+        snippet_selector=".sw-Card__Description, .sw-Card__itemAbstract",
+    )
+    print(f"[Yahoo] {len(results)} 件取得")
     return results
 
 
@@ -307,7 +320,7 @@ def main() -> int:
             timezone_id="Asia/Tokyo",
         )
 
-        for scraper in [scrape_suumo, scrape_via_duckduckgo]:
+        for scraper in [scrape_suumo, scrape_via_search]:
             all_listings.extend(scraper(context))
             time.sleep(2)
 
