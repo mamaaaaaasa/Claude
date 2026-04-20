@@ -2,8 +2,10 @@
   "ids": [
     "search:https://chintai-ex.jp/dwelling/show/z_2_4c632c632d502344c940799d272c3f3d",
     "search:https://realestate.yahoo.co.jp/catalog/detail/7ac09bc2d4f1c5ed603e71f6448627363fab297f/",
+    "search:https://realestate.yahoo.co.jp/rent/detail/00000150786827c23f3e483ea74438974c48a73f28e0/",
     "search:https://www.apamanshop.com/tokyo/115/b52026031400511/",
     "search:https://www.athome.co.jp/chintai/1100050024/?RECOMMFLG=1&BKLISTID=031PPC&sref=nw_reco",
+    "search:https://www.home-adpark.jp/chintai/K01348701_76JGJV_IV6/",
     "search:https://www.homes.co.jp/archive/b-32369291/",
     "search:https://www.homes.co.jp/archive/b-32369483/",
     "search:https://www.mansion-review.jp/mansion/175660.html",
@@ -14,5 +16,5 @@
     "suumo:/chintai/jnc_000106199634/",
     "suumo:/chintai/jnc_000106577099/"
   ],
-  "updated": "2026-04-20T17:26:27.684224+09:00"
+  "updated": "2026-04-20T18:24:44.570987+09:00"
 }
