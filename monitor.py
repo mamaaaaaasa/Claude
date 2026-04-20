@@ -164,7 +164,9 @@ def scrape_suumo(browser) -> list[dict]:
             area_el   = row.select_one(".cassetteitem_menseki")
             floor_el  = row.select_one(".cassetteitem_floor")
 
-            listing_id = f"suumo:{href}"
+            # bc= はセッション追跡パラメータで毎回変わるため除外
+            stable_href = href.split("?")[0] if "?" in href else href
+            listing_id = f"suumo:{stable_href}"
             results.append({
                 "id":       listing_id,
                 "source":   "SUUMO",
