@@ -199,38 +199,46 @@ REALESTATE_DOMAINS = [
     "heyaagent.com",
     "irent.jp",
     "o-uccino.com",
+    "chintai-ex.jp",
+    "home-adpark.jp",
+    "realestate.yahoo.co.jp",
+    "mansion-review.jp",
 ]
 
 
-def _search_engine_scrape(browser, search_url: str, label: str,
-                           link_selector: str, snippet_selector: str) -> list[dict]:
-    """検索エンジンの結果から不動産サイトのURLを収集する共通処理"""
-    results = []
-    soup = _fetch_html(browser, search_url, debug_name=label.lower())
+def scrape_via_search(browser) -> list[dict]:
+    """Yahoo Japan で物件名を検索し、不動産サイトのURLを収集する。
+    CSSクラスに依存せず全aタグを走査するため、Yahoo側のHTML変更に強い。
+    """
+    query = f'"{BUILDING_NAME}" 賃貸'
+    yahoo_url = f"https://search.yahoo.co.jp/search?p={quote(query)}"
+    soup = _fetch_html(browser, yahoo_url, debug_name="yahoo")
     if not soup:
-        return results
+        print("[Yahoo] 0 件取得")
+        return []
 
+    results = []
     seen_urls: set[str] = set()
 
-    for link_el in soup.select(link_selector):
-        href = link_el.get("href", "")
-        if not href or not href.startswith("http"):
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if not href.startswith("http"):
             continue
         if not any(domain in href for domain in REALESTATE_DOMAINS):
             continue
 
-        # Find surrounding text (title + snippet)
-        container = link_el.find_parent() or link_el
-        for _ in range(3):
-            parent = container.find_parent()
-            if parent:
-                container = parent
-            else:
+        # 建物名がリンク周辺テキストに含まれるか確認（最大5階層上まで探索）
+        node = a
+        found = False
+        for _ in range(5):
+            if BUILDING_NAME in node.get_text():
+                found = True
                 break
-        snippet_el = container.select_one(snippet_selector) if snippet_selector else None
-        combined = link_el.get_text(strip=True) + " " + (snippet_el.get_text(strip=True) if snippet_el else "")
+            if node.parent is None:
+                break
+            node = node.parent
 
-        if BUILDING_NAME not in combined:
+        if not found:
             continue
         if href in seen_urls:
             continue
@@ -247,34 +255,6 @@ def _search_engine_scrape(browser, search_url: str, label: str,
             "url":      href,
         })
 
-    return results
-
-
-def scrape_via_search(browser) -> list[dict]:
-    """Bing → Yahoo Japan の順で物件名を検索し、不動産サイトのURLを収集する"""
-    query = f'"{BUILDING_NAME}" 賃貸'
-
-    # 1st: Bing
-    bing_url = f"https://www.bing.com/search?q={quote(query)}&setlang=ja-JP&cc=JP"
-    results = _search_engine_scrape(
-        browser, bing_url, "bing",
-        link_selector="li.b_algo h2 a, #b_results h2 a",
-        snippet_selector=".b_caption p, .b_snippet",
-    )
-    print(f"[Bing] {len(results)} 件取得")
-
-    if results:
-        return results
-
-    # 2nd fallback: Yahoo Japan
-    print("[Bing] 0件 → Yahoo Japan にフォールバック")
-    time.sleep(2)
-    yahoo_url = f"https://search.yahoo.co.jp/search?p={quote(query)}"
-    results = _search_engine_scrape(
-        browser, yahoo_url, "yahoo",
-        link_selector="#web .sw-Card__title a, .sw-Card h3 a, #WS7 h3 a",
-        snippet_selector=".sw-Card__Description, .sw-Card__itemAbstract",
-    )
     print(f"[Yahoo] {len(results)} 件取得")
     return results
 
