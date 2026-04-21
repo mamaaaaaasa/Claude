@@ -1,0 +1,66 @@
+name: 条件指定 物件監視
+
+on:
+  schedule:
+    - cron: '0 22 * * *'   # JST 7:00
+    - cron: '0 0 * * *'    # JST 9:00
+    - cron: '0 2 * * *'    # JST 11:00
+    - cron: '0 4 * * *'    # JST 13:00
+    - cron: '0 6 * * *'    # JST 15:00
+    - cron: '0 8 * * *'    # JST 17:00
+    - cron: '0 10 * * *'   # JST 19:00
+    - cron: '0 12 * * *'   # JST 21:00
+    - cron: '0 14 * * *'   # JST 23:00
+  workflow_dispatch:
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright browsers
+        run: playwright install chromium --with-deps
+
+      - name: Run condition monitor
+        env:
+          TELEGRAM_BOT_TOKEN:   ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_GROUP_ID:    ${{ secrets.TELEGRAM_GROUP_ID }}
+          TELEGRAM_THREAD_BOT1: ${{ secrets.TELEGRAM_THREAD_BOT1 }}
+          TELEGRAM_THREAD_BOT2: ${{ secrets.TELEGRAM_THREAD_BOT2 }}
+        run: python monitor_search.py
+
+      - name: Upload debug HTML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-search-html
+          path: debug_search_*.html
+          if-no-files-found: ignore
+          retention-days: 3
+
+      - name: Commit updated state
+        run: |
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add seen_bot1.json seen_bot2.json 2>/dev/null || true
+          if git diff --staged --quiet; then
+            echo "変更なし"
+          else
+            git commit -m "chore: update search seen listings"
+            git pull --rebase origin ${{ github.ref_name }}
+            git push origin HEAD:${{ github.ref_name }}
+          fi
