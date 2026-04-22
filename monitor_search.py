@@ -51,6 +51,14 @@ ALLOWED_STATIONS = {
 LIGHT_STEEL_KEYWORDS = ["軽量鉄骨", "軽鉄造"]
 SMALL_LAYOUT = re.compile(r"^(ワンルーム|1R|1K|1DK)$")
 
+
+def _find_station_in_text(text: str) -> str:
+    """テキスト中に含まれる許可駅名を返す。見つからなければ空文字。"""
+    for s in ALLOWED_STATIONS:
+        if s in text:
+            return s
+    return ""
+
 # 対象駅を含む東京都区
 WARD_CODES = [
     "13101",  # 千代田区
@@ -129,13 +137,28 @@ def notify_telegram(message: str, thread_id: int) -> bool:
 
 # ── Playwright ───────────────────────────────────────────────────────────────
 
-def _fetch_html(browser, url: str, debug_name: str = "") -> BeautifulSoup | None:
+def _fetch_html(
+    browser,
+    url: str,
+    debug_name: str = "",
+    wait_selector: str = "",
+    wait_ms: int = 3000,
+) -> BeautifulSoup | None:
     try:
         page = browser.new_page()
-        page.set_extra_http_headers({"Accept-Language": "ja,en-US;q=0.9,en;q=0.8"})
-        response = page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        page.set_extra_http_headers({
+            "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+            "Referer": "https://www.google.co.jp/",
+        })
+        response = page.goto(url, wait_until="domcontentloaded", timeout=45000)
         print(f"[Browser] HTTP {response.status}: {url[:100]}")
-        page.wait_for_timeout(3000)
+        if wait_selector:
+            try:
+                page.wait_for_selector(wait_selector, timeout=10000)
+            except PlaywrightTimeout:
+                pass
+        else:
+            page.wait_for_timeout(wait_ms)
         html = page.content()
         page.close()
         if debug_name:
@@ -157,16 +180,28 @@ def _parse_floor(text: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def _parse_area(text: str) -> float | None:
+    m = re.search(r"([\d.]+)\s*m", text or "")
+    return float(m.group(1)) if m else None
+
+
 def _passes(listing: dict) -> bool:
-    if not any(s in listing["station"] for s in ALLOWED_STATIONS):
+    station = listing.get("station", "") or ""
+    if station and not any(s in station for s in ALLOWED_STATIONS):
         return False
-    if SMALL_LAYOUT.match(listing["layout"]):
+    layout = listing.get("layout", "") or ""
+    if layout and SMALL_LAYOUT.match(layout):
         return False
-    if any(kw in listing["structure"] for kw in LIGHT_STEEL_KEYWORDS):
+    structure = listing.get("structure", "") or ""
+    if any(kw in structure for kw in LIGHT_STEEL_KEYWORDS):
         return False
-    floor_num = _parse_floor(listing["floor"])
+    area_val = _parse_area(listing.get("area", ""))
+    if area_val is not None and area_val < 45:
+        return False
+    floor_num = _parse_floor(listing.get("floor", ""))
     if floor_num is not None and floor_num < 2:
-        if not any(kw in listing["building"] for kw in ["テラスハウス", "メゾネット"]):
+        building = listing.get("building", "") or ""
+        if not any(kw in building for kw in ["テラスハウス", "メゾネット"]):
             return False
     return True
 
@@ -176,7 +211,8 @@ def _passes(listing: dict) -> bool:
 def _build_suumo_url(no_deposit: bool, page: int) -> str:
     params = ["ar=030", "bs=040", "ta=13"]
     params += [f"ku={w}" for w in WARD_CODES]
-    params += ["cb=0", "ct=17.0", "et=15", "mb=45"]
+    # mb=45 を除去 → Python側の _passes() で面積フィルタ
+    params += ["cb=0", "ct=17.0", "et=15"]
     if no_deposit:
         params.append("shkn2=0101")
     if page > 1:
@@ -190,13 +226,19 @@ def scrape_suumo(browser, no_deposit: bool, max_pages: int = 5) -> list[dict]:
 
     for page_num in range(1, max_pages + 1):
         url = _build_suumo_url(no_deposit, page_num)
-        soup = _fetch_html(browser, url, debug_name=f"{tag}_p{page_num}" if page_num <= 2 else "")
+        soup = _fetch_html(
+            browser, url,
+            debug_name=f"{tag}_p{page_num}" if page_num <= 2 else "",
+            wait_selector=".cassetteitem",
+            wait_ms=5000,
+        )
         if not soup:
             break
 
         items = soup.select(".cassetteitem")
         if not items:
             print(f"[SUUMO] p{page_num}: 物件なし → 終了")
+            print(f"[SUUMO] ページテキスト抜粋: {soup.get_text()[:200]}")
             break
 
         print(f"[SUUMO] p{page_num}: {len(items)} 棟")
@@ -293,20 +335,20 @@ def scrape_athome(browser, no_deposit: bool, max_pages: int = 5) -> list[dict]:
             if href.startswith("/"):
                 href = "https://www.athome.co.jp" + href
 
+            full_text    = item.get_text(" ", strip=True)
             name_el      = item.select_one("[class*='buildingName'], [class*='building-name'], h2, h3")
             price_el     = item.select_one("[class*='price'], [class*='rent'], [class*='Price']")
             layout_el    = item.select_one("[class*='madori'], [class*='layout'], [class*='type']")
             area_el      = item.select_one("[class*='menseki'], [class*='area'], [class*='size']")
             floor_el     = item.select_one("[class*='floor'], [class*='kai']")
-            station_el   = item.select_one("[class*='station'], [class*='access'], [class*='traffic']")
-            structure_el = item.select_one("[class*='structure'], [class*='kozo'], [class*='type']")
+            structure_el = item.select_one("[class*='structure'], [class*='kozo']")
 
             listing = {
                 "id":        f"athome:{href}",
                 "source":    "アットホーム",
                 "building":  name_el.get_text(strip=True)      if name_el      else "",
                 "address":   "",
-                "station":   station_el.get_text(strip=True)   if station_el   else "",
+                "station":   _find_station_in_text(full_text),
                 "structure": structure_el.get_text(strip=True) if structure_el else "",
                 "price":     price_el.get_text(strip=True)     if price_el     else "",
                 "layout":    layout_el.get_text(strip=True)    if layout_el    else "",
@@ -371,24 +413,24 @@ def scrape_goodroom(browser, no_deposit: bool, max_pages: int = 5) -> list[dict]
             if href.startswith("/"):
                 href = "https://goodrooms.jp" + href
 
-            name_el    = item.select_one("[class*='name'], [class*='title'], h2, h3")
-            price_el   = item.select_one("[class*='price'], [class*='rent']")
-            layout_el  = item.select_one("[class*='layout'], [class*='madori'], [class*='type']")
-            area_el    = item.select_one("[class*='area'], [class*='size'], [class*='menseki']")
-            floor_el   = item.select_one("[class*='floor'], [class*='kai']")
-            station_el = item.select_one("[class*='station'], [class*='access'], [class*='nearest']")
+            full_text = item.get_text(" ", strip=True)
+            name_el   = item.select_one("[class*='name'], [class*='title'], h2, h3")
+            price_el  = item.select_one("[class*='price'], [class*='rent']")
+            layout_el = item.select_one("[class*='layout'], [class*='madori'], [class*='type']")
+            area_el   = item.select_one("[class*='area'], [class*='size'], [class*='menseki']")
+            floor_el  = item.select_one("[class*='floor'], [class*='kai']")
 
             listing = {
                 "id":        f"goodroom:{href}",
                 "source":    "goodroom",
-                "building":  name_el.get_text(strip=True)    if name_el    else "",
+                "building":  name_el.get_text(strip=True)  if name_el  else "",
                 "address":   "",
-                "station":   station_el.get_text(strip=True) if station_el else "",
+                "station":   _find_station_in_text(full_text),
                 "structure": "",
-                "price":     price_el.get_text(strip=True)   if price_el   else "",
-                "layout":    layout_el.get_text(strip=True)  if layout_el  else "",
-                "area":      area_el.get_text(strip=True)    if area_el    else "",
-                "floor":     floor_el.get_text(strip=True)   if floor_el   else "",
+                "price":     price_el.get_text(strip=True)  if price_el  else "",
+                "layout":    layout_el.get_text(strip=True) if layout_el else "",
+                "area":      area_el.get_text(strip=True)   if area_el   else "",
+                "floor":     floor_el.get_text(strip=True)  if floor_el  else "",
                 "url":       href,
             }
 
