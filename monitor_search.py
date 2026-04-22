@@ -3,6 +3,7 @@
 Bot1: 敷金礼金なし → 「敷金礼金なし新着」トピックに通知
 Bot2: 全条件一致  → 「全条件一致新着」トピックに通知
 
+対象サイト: SUUMO / アットホーム / goodroom
 条件:
 - 家賃17万以下（管理費別）
 - 1LDK以上 / 45m²以上 / 駅徒歩15分以内
@@ -49,6 +50,25 @@ ALLOWED_STATIONS = {
 
 LIGHT_STEEL_KEYWORDS = ["軽量鉄骨", "軽鉄造"]
 SMALL_LAYOUT = re.compile(r"^(ワンルーム|1R|1K|1DK)$")
+
+# 対象駅を含む東京都区
+WARD_CODES = [
+    "13101",  # 千代田区
+    "13102",  # 中央区
+    "13103",  # 港区
+    "13104",  # 新宿区
+    "13106",  # 台東区
+    "13107",  # 墨田区
+    "13108",  # 江東区
+    "13109",  # 品川区
+    "13110",  # 目黒区
+    "13112",  # 世田谷区
+    "13113",  # 渋谷区
+    "13114",  # 中野区
+    "13115",  # 杉並区
+    "13116",  # 豊島区
+    "13120",  # 練馬区
+]
 
 SEARCH_CONFIGS = [
     {
@@ -114,7 +134,7 @@ def _fetch_html(browser, url: str, debug_name: str = "") -> BeautifulSoup | None
         page = browser.new_page()
         page.set_extra_http_headers({"Accept-Language": "ja,en-US;q=0.9,en;q=0.8"})
         response = page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        print(f"[Browser] HTTP {response.status}: {url[:80]}")
+        print(f"[Browser] HTTP {response.status}: {url[:100]}")
         page.wait_for_timeout(3000)
         html = page.content()
         page.close()
@@ -130,16 +150,7 @@ def _fetch_html(browser, url: str, debug_name: str = "") -> BeautifulSoup | None
         return None
 
 
-# ── SUUMO スクレイパー ────────────────────────────────────────────────────────
-
-def _build_url(no_deposit: bool, page: int) -> str:
-    params = ["ar=030", "bs=040", "ta=13", "cb=0", "ct=17.0", "et=15", "mb=45"]
-    if no_deposit:
-        params.append("shkn2=0101")
-    if page > 1:
-        params.append(f"pn={page}")
-    return "https://suumo.jp/jj/chintai/ichiran/FR301FC001/?" + "&".join(params)
-
+# ── フィルタ ─────────────────────────────────────────────────────────────────
 
 def _parse_floor(text: str) -> int | None:
     m = re.search(r"(\d+)階", text or "")
@@ -160,22 +171,35 @@ def _passes(listing: dict) -> bool:
     return True
 
 
-def scrape_suumo(browser, no_deposit: bool, max_pages: int = 10) -> list[dict]:
-    tag = "bot1" if no_deposit else "bot2"
+# ── SUUMO スクレイパー ────────────────────────────────────────────────────────
+
+def _build_suumo_url(no_deposit: bool, page: int) -> str:
+    params = ["ar=030", "bs=040", "ta=13"]
+    params += [f"ku={w}" for w in WARD_CODES]
+    params += ["cb=0", "ct=17.0", "et=15", "mb=45"]
+    if no_deposit:
+        params.append("shkn2=0101")
+    if page > 1:
+        params.append(f"pn={page}")
+    return "https://suumo.jp/jj/chintai/ichiran/FR301FC001/?" + "&".join(params)
+
+
+def scrape_suumo(browser, no_deposit: bool, max_pages: int = 5) -> list[dict]:
+    tag = "suumo_bot1" if no_deposit else "suumo_bot2"
     results = []
 
     for page_num in range(1, max_pages + 1):
-        url = _build_url(no_deposit, page_num)
-        soup = _fetch_html(browser, url, debug_name=f"search_{tag}_p{page_num}" if page_num <= 2 else "")
+        url = _build_suumo_url(no_deposit, page_num)
+        soup = _fetch_html(browser, url, debug_name=f"{tag}_p{page_num}" if page_num <= 2 else "")
         if not soup:
             break
 
         items = soup.select(".cassetteitem")
         if not items:
-            print(f"[SUUMO/{tag}] p{page_num}: 物件なし → 終了")
+            print(f"[SUUMO] p{page_num}: 物件なし → 終了")
             break
 
-        print(f"[SUUMO/{tag}] p{page_num}: {len(items)} 棟")
+        print(f"[SUUMO] p{page_num}: {len(items)} 棟")
 
         for building in items:
             title_el = building.select_one(".cassetteitem_content-title")
@@ -203,6 +227,7 @@ def scrape_suumo(browser, no_deposit: bool, max_pages: int = 10) -> list[dict]:
 
                 listing = {
                     "id":        f"suumo:{href.split('?')[0]}",
+                    "source":    "SUUMO",
                     "building":  building_name,
                     "address":   address,
                     "station":   station_text,
@@ -219,6 +244,160 @@ def scrape_suumo(browser, no_deposit: bool, max_pages: int = 10) -> list[dict]:
 
         time.sleep(2)
 
+    print(f"[SUUMO] 条件一致: {len(results)} 件")
+    return results
+
+
+# ── アットホーム スクレイパー ─────────────────────────────────────────────────
+
+def _build_athome_url(no_deposit: bool, page: int) -> str:
+    params = [
+        "MAXRENT=170000",   # 家賃上限（円）
+        "MENSEKI=45,",      # 面積下限
+        "WALK=15",          # 徒歩分数上限
+    ]
+    if no_deposit:
+        params += ["SHIKIKIN=0", "REIKIN=0"]  # 敷金0・礼金0
+    if page > 1:
+        params.append(f"page={page}")
+    return "https://www.athome.co.jp/chintai/tokyo/list/?" + "&".join(params)
+
+
+def scrape_athome(browser, no_deposit: bool, max_pages: int = 5) -> list[dict]:
+    tag = "athome_bot1" if no_deposit else "athome_bot2"
+    results = []
+
+    for page_num in range(1, max_pages + 1):
+        url = _build_athome_url(no_deposit, page_num)
+        soup = _fetch_html(browser, url, debug_name=f"{tag}_p{page_num}" if page_num <= 2 else "")
+        if not soup:
+            break
+
+        items = soup.select(
+            ".itemCassette, .m-cassette__item, [class*='property-list__item'], "
+            "li[class*='property'], article[class*='property']"
+        )
+        if not items:
+            print(f"[athome] p{page_num}: 物件なし → 終了")
+            break
+
+        print(f"[athome] p{page_num}: {len(items)} 件")
+
+        for item in items:
+            link_el = item.select_one("a[href*='athome.co.jp'], a[href^='/']")
+            if not link_el:
+                continue
+            href = link_el.get("href", "")
+            if not href:
+                continue
+            if href.startswith("/"):
+                href = "https://www.athome.co.jp" + href
+
+            name_el      = item.select_one("[class*='buildingName'], [class*='building-name'], h2, h3")
+            price_el     = item.select_one("[class*='price'], [class*='rent'], [class*='Price']")
+            layout_el    = item.select_one("[class*='madori'], [class*='layout'], [class*='type']")
+            area_el      = item.select_one("[class*='menseki'], [class*='area'], [class*='size']")
+            floor_el     = item.select_one("[class*='floor'], [class*='kai']")
+            station_el   = item.select_one("[class*='station'], [class*='access'], [class*='traffic']")
+            structure_el = item.select_one("[class*='structure'], [class*='kozo'], [class*='type']")
+
+            listing = {
+                "id":        f"athome:{href}",
+                "source":    "アットホーム",
+                "building":  name_el.get_text(strip=True)      if name_el      else "",
+                "address":   "",
+                "station":   station_el.get_text(strip=True)   if station_el   else "",
+                "structure": structure_el.get_text(strip=True) if structure_el else "",
+                "price":     price_el.get_text(strip=True)     if price_el     else "",
+                "layout":    layout_el.get_text(strip=True)    if layout_el    else "",
+                "area":      area_el.get_text(strip=True)      if area_el      else "",
+                "floor":     floor_el.get_text(strip=True)     if floor_el     else "",
+                "url":       href,
+            }
+
+            if _passes(listing):
+                results.append(listing)
+
+        time.sleep(2)
+
+    print(f"[athome] 条件一致: {len(results)} 件")
+    return results
+
+
+# ── goodroom スクレイパー ─────────────────────────────────────────────────────
+
+def _build_goodroom_url(no_deposit: bool, page: int) -> str:
+    params = [
+        "rent_max=170000",  # 家賃上限（円）
+        "size_from=45",     # 面積下限
+        "walk_max=15",      # 徒歩分数上限
+        "layout[]=1ldk", "layout[]=2k", "layout[]=2dk", "layout[]=2ldk",
+        "layout[]=3k", "layout[]=3dk", "layout[]=3ldk",
+    ]
+    if no_deposit:
+        params.append("zero_shiki_rei=1")
+    if page > 1:
+        params.append(f"page={page}")
+    return "https://goodrooms.jp/tokyo/rooms/?" + "&".join(params)
+
+
+def scrape_goodroom(browser, no_deposit: bool, max_pages: int = 5) -> list[dict]:
+    tag = "goodroom_bot1" if no_deposit else "goodroom_bot2"
+    results = []
+
+    for page_num in range(1, max_pages + 1):
+        url = _build_goodroom_url(no_deposit, page_num)
+        soup = _fetch_html(browser, url, debug_name=f"{tag}_p{page_num}" if page_num <= 2 else "")
+        if not soup:
+            break
+
+        items = soup.select(
+            "[class*='room-list__item'], [class*='property-card'], "
+            "[class*='roomCard'], li[class*='room'], article[class*='room']"
+        )
+        if not items:
+            print(f"[goodroom] p{page_num}: 物件なし → 終了")
+            break
+
+        print(f"[goodroom] p{page_num}: {len(items)} 件")
+
+        for item in items:
+            link_el = item.select_one("a[href*='goodrooms.jp'], a[href^='/']")
+            if not link_el:
+                continue
+            href = link_el.get("href", "")
+            if not href:
+                continue
+            if href.startswith("/"):
+                href = "https://goodrooms.jp" + href
+
+            name_el    = item.select_one("[class*='name'], [class*='title'], h2, h3")
+            price_el   = item.select_one("[class*='price'], [class*='rent']")
+            layout_el  = item.select_one("[class*='layout'], [class*='madori'], [class*='type']")
+            area_el    = item.select_one("[class*='area'], [class*='size'], [class*='menseki']")
+            floor_el   = item.select_one("[class*='floor'], [class*='kai']")
+            station_el = item.select_one("[class*='station'], [class*='access'], [class*='nearest']")
+
+            listing = {
+                "id":        f"goodroom:{href}",
+                "source":    "goodroom",
+                "building":  name_el.get_text(strip=True)    if name_el    else "",
+                "address":   "",
+                "station":   station_el.get_text(strip=True) if station_el else "",
+                "structure": "",
+                "price":     price_el.get_text(strip=True)   if price_el   else "",
+                "layout":    layout_el.get_text(strip=True)  if layout_el  else "",
+                "area":      area_el.get_text(strip=True)    if area_el    else "",
+                "floor":     floor_el.get_text(strip=True)   if floor_el   else "",
+                "url":       href,
+            }
+
+            if _passes(listing):
+                results.append(listing)
+
+        time.sleep(2)
+
+    print(f"[goodroom] 条件一致: {len(results)} 件")
     return results
 
 
@@ -230,6 +409,7 @@ def format_listing(listing: dict, label: str, now_jst: str) -> str:
         f"{label} 新着物件",
         "",
         f"物件名: {listing['building']}",
+        f"サイト: {listing['source']}",
         f"家賃: {listing['price']}",
         f"間取り: {listing['layout']}　面積: {listing['area']}",
         f"階数: {listing['floor']}",
@@ -267,13 +447,27 @@ def main() -> None:
             name      = config["name"]
             label     = config["label"]
             thread_id = config["thread_id"]
-            print(f"\n--- {name} ---")
+            no_dep    = config["no_deposit"]
+            print(f"\n=== {name} ===")
 
             seen_ids   = load_seen(config["state_file"])
             is_initial = len(seen_ids) == 0
 
-            listings = scrape_suumo(context, no_deposit=config["no_deposit"])
-            print(f"[{name}] 条件一致: {len(listings)} 件")
+            listings: list[dict] = []
+            for scraper in [scrape_suumo, scrape_athome, scrape_goodroom]:
+                listings.extend(scraper(context, no_deposit=no_dep))
+                time.sleep(2)
+
+            # 同一URLの重複を除去
+            seen_in_run: set[str] = set()
+            unique = []
+            for l in listings:
+                if l["id"] not in seen_in_run:
+                    seen_in_run.add(l["id"])
+                    unique.append(l)
+            listings = unique
+
+            print(f"[{name}] 合計条件一致: {len(listings)} 件")
 
             if is_initial:
                 seen_ids.update(l["id"] for l in listings)
